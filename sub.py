@@ -15,7 +15,7 @@ class SubdomainScanner:
         self.session = None
 
     def get_default_wordlist(self):
-        # Базовий словник для брутфорсу
+       
         return ["www", "mail", "ftp", "admin", "api", "dev", "test", "blog"]
 
     async def fetch_url(self, url, headers=None):
@@ -27,25 +27,22 @@ class SubdomainScanner:
             return None
 
     async def check_virustotal(self):
-        # API VirusTotal (потрібен API ключ)
         url = f"https://www.virustotal.com/api/v3/domains/{self.domain}/subdomains"
-        headers = {"x-apikey": "2c28ecdd403a5ef3e5bb09aec3b0f770e33ed7aa777ea7cf2bcaaa4bdf858131"}
+        headers = {"x-apikey": ""}
         data = await self.fetch_url(url, headers)
         if data and "data" in data:
             for item in data["data"]:
                 self.found_subdomains.add(item["id"])
 
     async def check_securitytrails(self):
-        # API SecurityTrails (потрібен API ключ)
         url = f"https://api.securitytrails.com/v1/domain/{self.domain}/subdomains"
-        headers = {"APIKEY": "qhSL5cm4BekZI8osRc2_XjuNeboTXG8-"}
+        headers = {"APIKEY": ""}
         data = await self.fetch_url(url, headers)
         if data and "subdomains" in data:
             for sub in data["subdomains"]:
                 self.found_subdomains.add(f"{sub}.{self.domain}")
 
     async def dns_bruteforce(self):
-        # Асинхронний DNS брутфорс
         resolver = dns.resolver.Resolver()
         resolver.nameservers = ["8.8.8.8", "1.1.1.1"]  # Google DNS + Cloudflare
 
@@ -65,18 +62,15 @@ class SubdomainScanner:
     async def run(self):
         self.session = aiohttp.ClientSession()
         
-        # Пасивні методи
         await asyncio.gather(
             self.check_virustotal(),
             self.check_securitytrails()
         )
         
-        # Активний брутфорс
         await self.dns_bruteforce()
 
         await self.session.close()
 
-        # Збереження результатів
         with open(self.output_file, "w") as f:
             json.dump(list(self.found_subdomains), f, indent=2)
         
