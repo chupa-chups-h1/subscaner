@@ -1,10 +1,10 @@
-# Subee - Advanced Subdomain Scanner 🔍
+# Scanbee - Advanced Subdomain Scanner 🔍
 
-**"Chupa-Chups your way through subdomains!"** - by bughunter
+**"Scanbee your way through subdomains!"** - by bughunter
 
 ## 🚀 Overview
 
-Subee is a powerful asynchronous subdomain scanner designed for security researchers, bug bounty hunters, and penetration testers. This tool combines multiple reconnaissance techniques to discover hidden subdomains and identify live web applications.
+Scanbee is a powerful asynchronous subdomain scanner designed for security researchers, bug bounty hunters, and penetration testers. This tool combines multiple reconnaissance techniques to discover hidden subdomains and identify live web applications.
 
 ## ✨ Features
 
@@ -77,8 +77,18 @@ api.example.com,api.example.com/v2,301
    - Python 3.7+
    - aiohttp
    - dnspython
-  - tqdm
+   - tqdm
+   - gau
+   - waybackurls
+   - subjs
 
+```
+go install github.com/lc/gau/v2/cmd/gau@latest
+go install github.com/tomnomnom/waybackurls@latest
+go install github.com/lc/subjs@latest
+go install github.com/projectdiscovery/httpx/cmd/httpx@latest
+```
+     
 🤝 Contributing
 
 Fork the project
