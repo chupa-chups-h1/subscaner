@@ -19,25 +19,25 @@ Scanbee is a powerful asynchronous subdomain scanner designed for security resea
 ## 🛠 Installation
 
 ```bash
-git clone https://github.com/bughunter-chupachups/subee.git
-cd subee
+git clone https://github.com/bughunter-chupachups/scanbee.git
+cd scanbee
 pip install -r requirements.txt
 ```
 
 📖 Usage
 Basic scan:
 ```
-python subee.py -d example.com
+python scanbee.py -d example.com
 ```
 
 With custom wordlist:
 ```
-python subee.py -d example.com -w wordlist.txt
+python scanbee.py -d example.com -w wordlist.txt
 ```
 
 Specify output file:
 ```
-python subee.py -d example.com -o results.csv
+python scanbee.py -d example.com -o results.csv
 ```
 
 ⚙️ Configuration
