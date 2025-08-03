@@ -11,6 +11,9 @@ import os
 import json
 from collections import defaultdict
 import re
+import subprocess
+import tempfile
+import shutil
 
 class SubdomainScanner:
     def __init__(self, domain, wordlist=None, output_file=None):
@@ -26,6 +29,11 @@ class SubdomainScanner:
         self.max_retries = 3
         self.max_concurrent = 50
         self.resolver = self.setup_dns_resolver()
+        self.temp_dir = tempfile.mkdtemp(prefix=f"subscan_{self.domain}_")
+
+    def __del__(self):
+        if os.path.exists(self.temp_dir):
+            shutil.rmtree(self.temp_dir)
 
     def setup_dns_resolver(self):
         resolver = dns.resolver.Resolver()
@@ -49,9 +57,44 @@ class SubdomainScanner:
             'vpn', 'secure', 'portal', 'proxy', 'shop', 'staging'
         ]
 
+    async def run_command(self, cmd, source_name):
+        try:
+            result = subprocess.run(cmd, shell=True, check=True, capture_output=True, text=True)
+            output_file = os.path.join(self.temp_dir, f"subs_{source_name.lower()}.txt")
+            
+            with open(output_file, 'w') as f:
+                f.write(result.stdout)
+            
+            with open(output_file, 'r') as f:
+                for line in f:
+                    sub = line.strip().lower()
+                    if sub and (sub.endswith(f".{self.domain}") or sub == self.domain):
+                        self.found_subdomains.add(sub)
+                        self.source_subdomains[source_name].add(sub)
+            
+            return True
+        except subprocess.CalledProcessError as e:
+            print(f"[!] Error running {source_name}: {e.stderr}")
+            return False
+        except Exception as e:
+            print(f"[!] Unexpected error with {source_name}: {e}")
+            return False
+
+    async def run_gau(self):
+        cmd = f"gau --subs {self.domain} | cut -d'/' -f3 | sort -u"
+        return await self.run_command(cmd, "GAU")
+
+    async def run_waybackurls(self):
+        cmd = f"waybackurls {self.domain} | cut -d'/' -f3 | sort -u"
+        return await self.run_command(cmd, "WaybackURLs")
+
+    async def run_subjs(self):
+        cmd = f"subjs -u https://{self.domain} | grep -Eo '[a-zA-Z0-9.-]+\\.{self.domain}' | sort -u"
+        return await self.run_command(cmd, "SubJS")
+
     async def check_virustotal(self):
         url = f"https://www.virustotal.com/api/v3/domains/{self.domain}/subdomains"
-        headers = {"x-apikey": ""}
+        headers = {"x-apikey": "Your_vt_api"}
         
         try:
             async with self.session.get(url, headers=headers, timeout=self.timeout) as response:
@@ -74,7 +117,7 @@ class SubdomainScanner:
 
     async def check_securitytrails(self):
         url = f"https://api.securitytrails.com/v1/domain/{self.domain}/subdomains"
-        headers = {"APIKEY": ""}
+        headers = {"APIKEY": "securitytrails api"}
         
         try:
             async with self.session.get(url, headers=headers, timeout=self.timeout) as response:
@@ -146,6 +189,7 @@ class SubdomainScanner:
                                 except json.JSONDecodeError:
                                     pass
                             
+                            # HTML parsing fallback
                             count_before = len(self.found_subdomains)
                             pattern = re.compile(r'<TD>([^*>\s]+\.' + re.escape(self.domain) + r')<\/TD>', re.IGNORECASE)
                             matches = pattern.findall(data)
@@ -203,79 +247,64 @@ class SubdomainScanner:
             tasks = [query(sub) for sub in batch]
             await asyncio.gather(*tasks)
 
-    async def check_subdomain_status(self, url):
-        last_error = None
-        for attempt in range(self.max_retries):
-            try:
-                async with self.session.get(
-                    url,
-                    allow_redirects=True,
-                    timeout=self.timeout,
-                    ssl=False,
-                    headers={'User-Agent': 'Mozilla/5.0'}
-                ) as response:
-                    if response.status in self.valid_status_codes:
-                        clean_url = url.replace('http://', '').replace('https://', '').split('/')[0]
-                        final_url = str(response.url).replace('http://', '').replace('https://', '').split('/')[0]
-                        self.live_subdomains.add((
-                            clean_url.lower(),
-                            final_url.lower(),
-                            response.status
-                        ))
-                        return True
-                    return False
-            except (aiohttp.ClientError, asyncio.TimeoutError, socket.gaierror) as e:
-                last_error = str(e)
-                if attempt < self.max_retries - 1:
-                    await asyncio.sleep(2)
-            except Exception as e:
-                last_error = f"Unexpected error: {str(e)}"
-                break
+    async def run_httpx(self):
+        if not self.found_subdomains:
+            return
+            
+        input_file = os.path.join(self.temp_dir, "all_subs.txt")
+        output_file = os.path.join(self.temp_dir, "httpx_results.json")
         
-        return False
-
-    async def check_live_subdomains(self):
-        urls_to_check = set()
-        for subdomain in self.found_subdomains:
-            if not subdomain.startswith(('http://', 'https://')):
-                urls_to_check.add(f"http://{subdomain}")
-                urls_to_check.add(f"https://{subdomain}")
-            else:
-                urls_to_check.add(subdomain)
-
-        connector = aiohttp.TCPConnector(
-            force_close=True,
-            limit=self.max_concurrent,
-            limit_per_host=3,
-            enable_cleanup_closed=True
+        with open(input_file, 'w') as f:
+            for sub in self.found_subdomains:
+                f.write(f"{sub}\n")
+        
+        cmd = (
+            f"httpx -l {input_file} -title -status-code -tech-detect "
+            f"-follow-redirects -json -o {output_file} -silent"
         )
-
-        async with aiohttp.ClientSession(
-            connector=connector,
-            timeout=self.timeout,
-            trust_env=True
-        ) as session:
-            self.session = session
-            semaphore = asyncio.Semaphore(self.max_concurrent)
+        
+        try:
+            print("\n[*] Running httpx to check live subdomains...")
+            result = subprocess.run(cmd, shell=True, check=True, capture_output=True, text=True)
             
-            async def limited_check(url):
-                async with semaphore:
-                    return await self.check_subdomain_status(url)
-            
-            tasks = [limited_check(url) for url in urls_to_check]
-            
-            for f in tqdm(asyncio.as_completed(tasks), total=len(tasks), 
-                         desc="Checking subdomains", unit="subdomains"):
-                await f
+            if os.path.exists(output_file):
+                with open(output_file, 'r') as f:
+                    for line in f:
+                        try:
+                            data = json.loads(line.strip())
+                            url = data.get('url', '')
+                            if not url:
+                                continue
+                                
+                            final_url = data.get('final_url', url)
+                            status_code = data.get('status_code', 0)
+                            title = data.get('title', '')
+                            tech = data.get('technologies', [])
+                            
+                            clean_url = url.replace('http://', '').replace('https://', '').split('/')[0]
+                            clean_final = final_url.replace('http://', '').replace('https://', '').split('/')[0]
+                            
+                            self.live_subdomains.add((
+                                clean_url.lower(),
+                                clean_final.lower(),
+                                status_code,
+                                title,
+                                ', '.join([t.get('name', '') for t in tech]) if tech else ''
+                            ))
+                        except json.JSONDecodeError:
+                            continue
+        except subprocess.CalledProcessError as e:
+            print(f"[!] Error running httpx: {e.stderr}")
+        except Exception as e:
+            print(f"[!] Unexpected error with httpx: {e}")
 
     def print_discovery_stats(self):
         print("\n[+] Subdomain Discovery Results:")
         print(f"{'Source':<20} {'Subdomains':>10}")
         print("-" * 32)
         
-        for source in ['VirusTotal', 'SecurityTrails', 'crt.sh', 'DNS BruteForce']:
-            if source in self.source_subdomains:
-                print(f"{source:<20} {len(self.source_subdomains[source]):>10}")
+        for source in sorted(self.source_subdomains.keys()):
+            print(f"{source:<20} {len(self.source_subdomains[source]):>10}")
         
         print("-" * 32)
         print(f"{'Total unique':<20} {len(self.found_subdomains):>10}")
@@ -286,28 +315,32 @@ class SubdomainScanner:
         with open(self.output_file, 'w', newline='', encoding='utf-8') as f:
             writer = csv.writer(f)
             
-            writer.writerow(["Subdomain Discovery Results"])
+            writer.writerow(["Subdomain Discovery Summary"])
             writer.writerow(["Source", "Count"])
-            for source in ['VirusTotal', 'SecurityTrails', 'crt.sh', 'DNS BruteForce']:
-                if source in self.source_subdomains:
-                    writer.writerow([source, len(self.source_subdomains[source])])
+            for source in sorted(self.source_subdomains.keys()):
+                writer.writerow([source, len(self.source_subdomains[source])])
             
             writer.writerow(["Total unique", len(self.found_subdomains)])
             writer.writerow([])
             
-            writer.writerow(["Live subdomains found", len(self.live_subdomains)])
-            writer.writerow([])
-            
             writer.writerow(["All Found Subdomains"])
-            for sub in sorted(self.found_subdomains):
-                writer.writerow([sub])
+            writer.writerow(["Subdomain", "Source"])
+            
+            subdomain_sources = defaultdict(list)
+            for source, subs in self.source_subdomains.items():
+                for sub in subs:
+                    subdomain_sources[sub].append(source)
+            
+            for sub in sorted(subdomain_sources.keys()):
+                sources = ', '.join(sorted(subdomain_sources[sub]))
+                writer.writerow([sub, sources])
             
             writer.writerow([])
             
             writer.writerow(["Live Subdomains Details"])
-            writer.writerow(["Original", "Final URL", "Status Code"])
-            for original, final, status in sorted(self.live_subdomains, key=lambda x: x[0]):
-                writer.writerow([original, final, status])
+            writer.writerow(["Original URL", "Final URL", "Status Code", "Title", "Technologies"])
+            for original, final, status, title, tech in sorted(self.live_subdomains, key=lambda x: x[0]):
+                writer.writerow([original, final, status, title, tech])
 
     async def run(self):
         start_time = time.time()
@@ -318,10 +351,14 @@ class SubdomainScanner:
                 self.session = session
                 
                 print("\n[*] Running discovery methods...")
+                
                 await asyncio.gather(
                     self.check_virustotal(),
                     self.check_securitytrails(),
-                    self.check_crtsh()
+                    self.check_crtsh(),
+                    self.run_gau(),
+                    self.run_waybackurls(),
+                    self.run_subjs()
                 )
                 
                 if self.wordlist:
@@ -330,8 +367,7 @@ class SubdomainScanner:
                 self.print_discovery_stats()
                 
                 if self.found_subdomains:
-                    print("\n[*] Checking subdomain availability...")
-                    await self.check_live_subdomains()
+                    await self.run_httpx()
                     print(f"\n[+] Live subdomains found: {len(self.live_subdomains)}")
                 
                 self.save_results()
